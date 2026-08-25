@@ -1,10 +1,17 @@
-import { PDFParse } from "pdf-parse";
-
 /**
  * Extracts raw plain text from a PDF buffer.
  * Returns an empty string if the PDF has no extractable text (e.g. scanned image).
+ *
+ * `pdf-parse` is dynamically imported here (instead of statically at module
+ * scope) because it pulls in `pdfjs-dist`, which references browser-only
+ * globals like `DOMMatrix` as soon as the module is loaded. A static
+ * top-level import would crash ANY route that imports this file (even ones
+ * that never call this function, e.g. a plain `GET /api/jobs` listing) when
+ * running on Vercel's serverless/edge runtime, since the whole module fails
+ * to load.
  */
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
+  const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: buffer });
   const result = await parser.getText();
   return result.text ?? "";
