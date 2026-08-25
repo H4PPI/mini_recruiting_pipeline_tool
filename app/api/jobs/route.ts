@@ -6,8 +6,10 @@ import {
   isPdfFile,
   uploadJobDescriptionPdf,
 } from "@/lib/jobs/jd-storage";
+import { extractTextFromPDF, normalizeJdText } from "@/lib/etl/pdf-extractor";
 import { evaluateCandidateAgainstJD } from "@/lib/etl/ai-screener";
 import { PENDING_REVIEW_STATUS } from "@/lib/pipeline/stages";
+import { serializeJobWithCandidates } from "@/lib/jobs/serialize";
 
 export async function GET() {
   try {
@@ -29,7 +31,7 @@ export async function GET() {
         createdAt: "desc",
       },
     });
-    return NextResponse.json(jobs);
+    return NextResponse.json(jobs.map(serializeJobWithCandidates));
   } catch (error) {
     console.error("Error fetching jobs:", error);
     return NextResponse.json(
@@ -72,13 +74,36 @@ export async function POST(request: NextRequest) {
       : null;
     uploadedJdBlobPath = jdBlobPath;
 
+    // If we uploaded a PDF JD, attempt to extract text here so we can store
+    // it in the DB for search/evaluation and to avoid fetching the blob later.
+    let extractedJdText: string | null = null;
+    if (hasPdfJd && jdBlobPath) {
+      try {
+        const jdBlob = await get(jdBlobPath, { access: "private" });
+        if (jdBlob) {
+          const arrayBuffer = await new Response(jdBlob.stream).arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          extractedJdText = await extractTextFromPDF(buffer);
+          // Normalize the extracted text for consistency and better AI evaluation
+          if (extractedJdText) {
+            extractedJdText = normalizeJdText(extractedJdText);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to extract text from JD PDF:", err);
+      }
+    }
+
+    // Also normalize plain text JD if provided
+    const finalJdText = hasPdfJd ? extractedJdText : (plainJdText ? normalizeJdText(plainJdText) : plainJdText);
+
     const job = await prisma.job.create({
       data: {
         id: jobId,
         title,
         description: description || null,
         jdBlobPath,
-        jdText: hasPdfJd ? null : plainJdText,
+        jdText: finalJdText,
       },
       include: {
         candidates: {
@@ -92,7 +117,8 @@ export async function POST(request: NextRequest) {
     // After creating the job, evaluate existing candidates using the masked
     // draft resume (stored in blob) against this JD and create CandidateJob
     // entries with match scores so the jobs page can show AI-ranked candidates.
-    const jdForAi = hasPdfJd && jdBlobPath ? null : plainJdText;
+    // Use the normalized JD text for AI evaluation.
+    const jdForAi = finalJdText || "";
 
     if (jdForAi || jdBlobPath) {
       // Fetch all candidates that have a draftResumeBlobPath
@@ -111,20 +137,10 @@ export async function POST(request: NextRequest) {
           }
           const draftText = await new Response(draft.stream).text();
 
-          // If JD is a PDF blob, try to fetch text from it; otherwise use pasted text
-          let jdTextForEval = plainJdText;
-          if (!plainJdText && jdBlobPath) {
-            const jdBlob = await get(jdBlobPath, { access: "private" });
-            if (!jdBlob) {
-              console.error("JD blob not found:", jdBlobPath);
-              continue;
-            }
-            jdTextForEval = await new Response(jdBlob.stream).text();
-          }
-
           const { matchScore, matchDetails, aiEvaluation } = await evaluateCandidateAgainstJD(
             draftText,
-            jdTextForEval || ""
+            jdForAi,
+            title
           );
 
           // Upsert CandidateJob linking candidate to this job
@@ -149,7 +165,21 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json(job, { status: 201 });
+    const refreshedJob = await prisma.job.findUnique({
+      where: { id: job.id },
+      include: {
+        candidates: {
+          include: {
+            candidate: true,
+          },
+        },
+      },
+    });
+
+    return NextResponse.json(
+      serializeJobWithCandidates(refreshedJob ?? job),
+      { status: 201 }
+    );
   } catch (error) {
     await deleteJobDescriptionPdf(uploadedJdBlobPath);
     console.error("Error creating job:", error);

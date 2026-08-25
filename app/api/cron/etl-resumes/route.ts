@@ -49,12 +49,7 @@ function sourceFromPathname(pathname: string): ResumeSource {
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 /**
- * GET /api/cron/etl-resumes
- *
- * Triggered daily at 06:00 AM (UTC+7) by Vercel Cron.
- * Authenticated via `Authorization: Bearer <CRON_SECRET>`.
- *
- * Pipeline:
+ * Runs the full resume ingestion pipeline:
  *  1. List all PDFs in `mock-sources/` blob prefix.
  *  2. Skip files already present in the `candidates` table.
  *  3. For each new file:
@@ -64,31 +59,29 @@ function sourceFromPathname(pathname: string): ResumeSource {
  *     d. Mask PII  → masked text is AI-safe; raw PII stored for HR only.
  *     e. Upload masked draft to `candidate-resumes/` prefix.
  *     f. Insert candidate row into Postgres.
+ *     g. Evaluate the candidate against every job's JD.
  *  4. Retry failed files up to 3 times with exponential back-off.
  *  5. Persist run summary to `etl_run_log`.
+ *
+ * Shared by the Vercel Cron route (GET, secret-authenticated) and the
+ * HR-triggered manual sync endpoint (POST /api/admin/trigger-etl).
  */
-export async function GET(req: NextRequest) {
-  // ── 1. Auth ───────────────────────────────────────────────────────────────
-  const authHeader = req.headers.get("authorization");
-  if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export async function runResumeEtlPipeline() {
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
-    return NextResponse.json({ error: "BLOB_READ_WRITE_TOKEN is not configured." }, { status: 500 });
+    throw new Error("BLOB_READ_WRITE_TOKEN is not configured.");
   }
 
-  // ── 2. Create run log entry ───────────────────────────────────────────────
+  // ── 1. Create run log entry ───────────────────────────────────────────────
   const runLog = await prisma.etlRunLog.create({
     data: { runStatus: "running" },
   });
   const runId = runLog.id;
 
-  // ── 4. List source blobs ──────────────────────────────────────────────────
+  // ── 2. List source blobs ──────────────────────────────────────────────────
   const allBlobs = await listAllBlobs(SOURCE_BLOB_PREFIX);
   const pdfBlobs = allBlobs.filter((b) => b.pathname.toLowerCase().endsWith(".pdf"));
 
-  // ── 5. Filter already-processed files ────────────────────────────────────
+  // ── 3. Filter already-processed files ────────────────────────────────────
   let alreadyProcessed: string[] = [];
   if (pdfBlobs.length > 0) {
     const rows = await prisma.candidate.findMany({
@@ -101,7 +94,7 @@ export async function GET(req: NextRequest) {
   const processedSet = new Set(alreadyProcessed);
   const toProcess = pdfBlobs.filter((b) => !processedSet.has(b.pathname));
 
-  // ── 6. Process each file ──────────────────────────────────────────────────
+  // ── 4. Process each file ──────────────────────────────────────────────────
   let processed = 0;
   let failed = 0;
   const errorDetails: { pathname: string; error: string }[] = [];
@@ -159,7 +152,7 @@ export async function GET(req: NextRequest) {
         }
 
         // i. Persist candidate record (raw + masked + AI summary)
-        await prisma.candidate.upsert({
+        const candidate = await prisma.candidate.upsert({
           where: { sourceBlobPath: blob.pathname },
           create: {
             source,
@@ -184,6 +177,56 @@ export async function GET(req: NextRequest) {
           update: {},
         });
 
+        // j. Evaluate this candidate against every open job's JD so it shows
+        // up ranked on the Jobs page as soon as it's ingested, instead of
+        // only being evaluated against jobs created afterwards.
+        try {
+          const jobs = await prisma.job.findMany({
+            where: {
+              OR: [{ jdText: { not: null } }, { jdBlobPath: { not: null } }],
+            },
+            select: { id: true, title: true, jdText: true, jdBlobPath: true },
+          });
+
+          for (const job of jobs) {
+            try {
+              let jdTextForEval = job.jdText ?? "";
+              if (!jdTextForEval && job.jdBlobPath) {
+                const jdBlob = await get(job.jdBlobPath, { access: "private" });
+                if (jdBlob) {
+                  jdTextForEval = await new Response(jdBlob.stream).text();
+                }
+              }
+
+              const { matchScore, matchDetails, aiEvaluation } = await evaluateCandidateAgainstJD(
+                maskedText,
+                jdTextForEval,
+                job.title
+              );
+
+              await prisma.candidateJob.upsert({
+                where: { candidateId_jobId: { candidateId: candidate.id, jobId: job.id } },
+                create: {
+                  candidateId: candidate.id,
+                  jobId: job.id,
+                  matchScore,
+                  matchDetails: matchDetails as unknown as Prisma.InputJsonValue,
+                  aiEvaluation,
+                },
+                update: {
+                  matchScore,
+                  matchDetails: matchDetails as unknown as Prisma.InputJsonValue,
+                  aiEvaluation,
+                },
+              });
+            } catch (jobErr) {
+              console.error(`Error evaluating candidate ${candidate.id} against job ${job.id}:`, jobErr);
+            }
+          }
+        } catch (jobsErr) {
+          console.error("Error fetching jobs for candidate evaluation:", jobsErr);
+        }
+
         processed++;
         success = true;
         break;
@@ -201,7 +244,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // ── 8. Finalise run log ───────────────────────────────────────────────────
+  // ── 5. Finalise run log ───────────────────────────────────────────────────
   const finalStatus =
     toProcess.length > 0 && failed === toProcess.length ? "failed" : "completed";
 
@@ -218,7 +261,7 @@ export async function GET(req: NextRequest) {
     },
   });
 
-  return NextResponse.json({
+  return {
     runId,
     summary: {
       totalFound: pdfBlobs.length,
@@ -227,5 +270,29 @@ export async function GET(req: NextRequest) {
       failed,
     },
     ...(errorDetails.length > 0 && { errors: errorDetails }),
-  });
+  };
+}
+
+/**
+ * GET /api/cron/etl-resumes
+ *
+ * Triggered daily at 06:00 AM (UTC+7) by Vercel Cron.
+ * Authenticated via `Authorization: Bearer <CRON_SECRET>`.
+ */
+export async function GET(req: NextRequest) {
+  const authHeader = req.headers.get("authorization");
+  if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  try {
+    const result = await runResumeEtlPipeline();
+    return NextResponse.json(result);
+  } catch (error) {
+    console.error("ETL pipeline failed:", error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "ETL pipeline failed" },
+      { status: 500 }
+    );
+  }
 }

@@ -7,6 +7,7 @@ import {
 } from "@/lib/jobs/jd-storage";
 import { prisma } from "@/lib/db";
 import { PENDING_REVIEW_STATUS } from "@/lib/pipeline/stages";
+import { serializeJobWithCandidates } from "@/lib/jobs/serialize";
 
 export async function GET(
   request: NextRequest,
@@ -35,7 +36,7 @@ export async function GET(
       return NextResponse.json({ error: "Job not found" }, { status: 404 });
     }
 
-    return NextResponse.json(job);
+    return NextResponse.json(serializeJobWithCandidates(job));
   } catch (error) {
     console.error("Error fetching job:", error);
     return NextResponse.json(
@@ -111,7 +112,7 @@ export async function PUT(
       }
     }
 
-    return NextResponse.json(job);
+    return NextResponse.json(serializeJobWithCandidates(job));
   } catch (error) {
     console.error("Error updating job:", error);
     return NextResponse.json(

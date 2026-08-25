@@ -18,23 +18,108 @@ export default function JobsPage() {
   const [approvedCandidateIds, setApprovedCandidateIds] = useState<string[]>([]);
   const [candidateMatches, setCandidateMatches] = useState<any[]>([]);
   const [loadingCandidates, setLoadingCandidates] = useState(false);
+  const [syncingResumes, setSyncingResumes] = useState(false);
+  const [syncResult, setSyncResult] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+  const [rematching, setRematching] = useState(false);
+  const [rematchResult, setRematchResult] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
 
-  useEffect(() => {
-    fetch("/api/jobs")
+  const loadJobs = () => {
+    setLoading(true);
+    return fetch("/api/jobs")
       .then((response) => {
         if (!response.ok) throw new Error("Failed to fetch jobs");
         return response.json() as Promise<Job[]>;
       })
       .then((data) => {
         setJobs(data);
+        return data;
       })
       .catch((error) => {
         console.error("Error fetching jobs:", error);
+        return [] as Job[];
       })
       .finally(() => {
         setLoading(false);
       });
+  };
+
+  useEffect(() => {
+    loadJobs();
   }, []);
+
+  const handleSyncResumes = async () => {
+    setSyncingResumes(true);
+    setSyncResult(null);
+    try {
+      const res = await fetch("/api/admin/trigger-etl", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to sync resumes");
+      }
+      const { processed, skipped, failed, totalFound } = data.summary ?? {};
+      setSyncResult({
+        type: failed > 0 ? "error" : "success",
+        message: `Found ${totalFound ?? 0} resumes — processed ${processed ?? 0}, skipped ${skipped ?? 0}, failed ${failed ?? 0}.`,
+      });
+
+      // Refresh jobs (candidate match counts) and the currently selected job's
+      // candidate list so newly ingested resumes show up immediately.
+      const updatedJobs = await loadJobs();
+      if (selectedJob) {
+        const refreshedSelected = updatedJobs.find((j) => j.id === selectedJob.id);
+        if (refreshedSelected) setSelectedJob(refreshedSelected);
+      }
+    } catch (error) {
+      console.error("Error syncing resumes:", error);
+      setSyncResult({
+        type: "error",
+        message: error instanceof Error ? error.message : "Failed to sync resumes",
+      });
+    } finally {
+      setSyncingResumes(false);
+    }
+  };
+
+  const handleRematch = async () => {
+    if (!selectedJob) return;
+    setRematching(true);
+    setRematchResult(null);
+    try {
+      const res = await fetch(`/api/jobs/${selectedJob.id}/rematch`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to re-run matching");
+      }
+      const { totalCandidates, matched, failed } = data.summary ?? {};
+      setRematchResult({
+        type: failed > 0 ? "error" : "success",
+        message: `Re-evaluated ${matched ?? 0}/${totalCandidates ?? 0} candidates against this JD (${failed ?? 0} failed).`,
+      });
+
+      if (data.job) {
+        setSelectedJob(data.job);
+        setJobs((currentJobs) =>
+          currentJobs.map((job) => (job.id === data.job.id ? data.job : job))
+        );
+      }
+    } catch (error) {
+      console.error("Error re-running matching:", error);
+      setRematchResult({
+        type: "error",
+        message: error instanceof Error ? error.message : "Failed to re-run matching",
+      });
+    } finally {
+      setRematching(false);
+    }
+  };
 
   const handleJobAdded = (newJob: Job) => {
     setJobs([newJob, ...jobs]);
@@ -54,6 +139,7 @@ export default function JobsPage() {
     setSelectedJob(job);
     setEditingJob(null);
     setShowFullJd(false);
+    setRematchResult(null);
   };
 
   const handleJobUpdated = (updatedJob: Job) => {
@@ -134,16 +220,38 @@ export default function JobsPage() {
               Manage job positions and view matched candidates
             </p>
           </div>
-          <Button
-            onClick={() => {
-              setShowJobForm(!showJobForm);
-              setEditingJob(null);
-            }}
-            className="px-6"
-          >
-            {showJobForm ? "Cancel" : "+ Add Job"}
-          </Button>
+          <div className="flex gap-3">
+            <Button
+              variant="secondary"
+              onClick={handleSyncResumes}
+              disabled={syncingResumes}
+              className="px-6"
+            >
+              {syncingResumes ? "Syncing..." : "Sync Resumes (ETL)"}
+            </Button>
+            <Button
+              onClick={() => {
+                setShowJobForm(!showJobForm);
+                setEditingJob(null);
+              }}
+              className="px-6"
+            >
+              {showJobForm ? "Cancel" : "+ Add Job"}
+            </Button>
+          </div>
         </div>
+
+        {syncResult && (
+          <div
+            className={`mb-6 rounded-lg border px-4 py-3 text-sm ${
+              syncResult.type === "success"
+                ? "border-mainYellow bg-mainYellow/10 text-black/80"
+                : "border-red-300 bg-red-50 text-red-700"
+            }`}
+          >
+            {syncResult.message}
+          </div>
+        )}
 
         {/* Job Form */}
         {showJobForm && (
@@ -183,6 +291,17 @@ export default function JobsPage() {
 
                   return (
                     <>
+                {rematchResult && (
+                  <div
+                    className={`rounded-lg border px-4 py-3 text-sm ${
+                      rematchResult.type === "success"
+                        ? "border-mainYellow bg-mainYellow/10 text-black/80"
+                        : "border-red-300 bg-red-50 text-red-700"
+                    }`}
+                  >
+                    {rematchResult.message}
+                  </div>
+                )}
                 {/* Job Details */}
                 {editingJob ? (
                   <JobForm
@@ -204,13 +323,23 @@ export default function JobsPage() {
                           </p>
                         )}
                       </div>
-                      <Button
-                        variant="secondary"
-                        onClick={() => setEditingJob(selectedJob)}
-                        className="sm:w-auto"
-                      >
-                        Edit JD
-                      </Button>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:w-auto">
+                        <Button
+                          variant="secondary"
+                          onClick={handleRematch}
+                          disabled={rematching}
+                          className="sm:w-auto"
+                        >
+                          {rematching ? "Matching..." : "Re-run Matching"}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={() => setEditingJob(selectedJob)}
+                          className="sm:w-auto"
+                        >
+                          Edit JD
+                        </Button>
+                      </div>
                     </div>
 
                     <div>
