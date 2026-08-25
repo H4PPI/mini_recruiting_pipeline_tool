@@ -2,15 +2,23 @@
  * Extracts raw plain text from a PDF buffer.
  * Returns an empty string if the PDF has no extractable text (e.g. scanned image).
  *
- * `pdf-parse` is dynamically imported here (instead of statically at module
- * scope) because it pulls in `pdfjs-dist`, which references browser-only
- * globals like `DOMMatrix` as soon as the module is loaded. A static
- * top-level import would crash ANY route that imports this file (even ones
- * that never call this function, e.g. a plain `GET /api/jobs` listing) when
- * running on Vercel's serverless/edge runtime, since the whole module fails
- * to load.
+ * `pdf-parse` (via `pdfjs-dist`) references the browser-only `DOMMatrix`
+ * global as soon as its module is loaded (it's marked `serverExternalPackages`
+ * in next.config.ts, so Node's native module resolution loads it rather than
+ * a bundler-tree-shaken version). On Vercel's Node serverless runtime this
+ * throws `ReferenceError: DOMMatrix is not defined`. We polyfill `DOMMatrix`
+ * with a pure-JS implementation (`dommatrix` package, no native deps) before
+ * ever importing `pdf-parse`, since Node has no built-in DOMMatrix.
  */
+async function ensureDOMMatrixPolyfill() {
+  if (typeof (globalThis as any).DOMMatrix === "undefined") {
+    const { default: DOMMatrix } = await import("dommatrix");
+    (globalThis as any).DOMMatrix = DOMMatrix;
+  }
+}
+
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
+  await ensureDOMMatrixPolyfill();
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: buffer });
   const result = await parser.getText();
