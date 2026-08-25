@@ -1,9 +1,5 @@
-import MainLayout from "./components/MainLayout";
+import { redirect } from "next/navigation";
 
 export default function Home() {
-  return (
-    <MainLayout>
-      <h1 className="text-2xl font-bold text-black">Welcome</h1>
-    </MainLayout>
-  );
+  redirect("/dashboard");
 }

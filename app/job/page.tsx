@@ -594,13 +594,13 @@ function CandidateCard({ candidateJob, onApprove }: CandidateCardProps) {
             href={`/api/candidates/${candidate.id}/resume`}
             target="_blank"
             rel="noreferrer"
-            className="flex-1 px-3 py-2 bg-mainYellow text-black rounded font-semibold hover:bg-yellow-500 transition-colors text-sm text-center"
+            className="flex-1 px-3 py-2 bg-white border border-black text-black rounded font-semibold hover:bg-yellow-500 transition-colors text-sm text-center"
           >
             Open Resume
           </a>
-        <Button variant="secondary" size="sm" className="flex-1">
+        {/* <Button variant="secondary" size="sm" className="flex-1">
           Details
-        </Button>
+        </Button> */}
         <Button
           size="sm"
           className="flex-1"
