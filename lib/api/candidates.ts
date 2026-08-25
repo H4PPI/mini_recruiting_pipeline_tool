@@ -1,0 +1,39 @@
+import type { PipelineStage } from "@/lib/pipeline/stages";
+
+/**
+ * Client-side helpers for talking to the `/api/candidates` endpoints.
+ * Keeping these calls in one place avoids scattering raw `fetch` logic
+ * across page components.
+ */
+
+export async function fetchPendingCandidates() {
+  const res = await fetch("/api/candidates");
+  if (!res.ok) throw new Error("Failed to fetch candidates");
+  return res.json();
+}
+
+export async function fetchTrackerCandidates() {
+  const res = await fetch("/api/candidates?scope=tracker");
+  if (!res.ok) throw new Error("Failed to fetch candidates");
+  return res.json();
+}
+
+export async function approveCandidate(candidateId: string, candidateJobId: string) {
+  const res = await fetch(`/api/candidates/${candidateId}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ candidateJobId }),
+  });
+  if (!res.ok) throw new Error("Failed to approve candidate");
+  return res.json();
+}
+
+export async function updateCandidateStage(candidateId: string, stage: PipelineStage) {
+  const res = await fetch(`/api/candidates/${candidateId}/stage`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ stage }),
+  });
+  if (!res.ok) throw new Error("Failed to update candidate stage");
+  return res.json();
+}

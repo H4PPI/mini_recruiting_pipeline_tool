@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Candidates ───────────────────────────────────────────────────────────────
+
+model Candidate {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  source              String
+  sourceBlobPath      String    @unique @map("source_blob_path")
+
+  // Full PII — HR only, never forwarded to AI
+  fullName            String?   @map("full_name")
+  email               String?
+  phone               String?
+  address             String?
+
+  // Normalized structured fields
+  skills              Json      @default("[]")
+  experience          Json      @default("[]")
+  education           Json      @default("[]")
+  summary             String?
+  languages           Json      @default("[]")
+
+  // AI-safe masked text (PII replaced with tokens)
+  maskedText          String?   @map("masked_text")
+  draftResumeBlobPath String?   @map("draft_resume_blob_path")
+  rawResumeBlobPath   String?   @map("raw_resume_blob_path")
+  rawText             String?   @map("raw_text")
+
+  // Candidate-level AI screening summary (general / pre-job)
+  aiScore             Float?    @map("ai_score")
+  aiSummary           String?   @map("ai_summary")
+  aiDetails           Json?     @map("ai_details")
+
+  ingestedAt          DateTime  @default(now()) @map("ingested_at")
+  pipelineStatus      String    @default("pending") @map("pipeline_status")
+
+  jobs                CandidateJob[]
+
+  @@map("candidates")
+}
+
+// ─── Jobs / Positions ─────────────────────────────────────────────────────────
+
+model Job {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title               String
+  description         String?
+  jdBlobPath          String?   @unique @map("jd_blob_path")
+  jdText              String?   @map("jd_text")
+
+  candidates          CandidateJob[] @relation("candidates")
+
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  @@map("jobs")
+}
+
+model CandidateJob {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  candidateId         String    @map("candidate_id") @db.Uuid
+  jobId               String    @map("job_id") @db.Uuid
+
+  candidate           Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  job                 Job       @relation("candidates", fields: [jobId], references: [id], onDelete: Cascade)
+
+  matchScore          Float?    @map("match_score")
+  matchDetails        Json?     @map("match_details")
+  aiEvaluation        String?   @map("ai_evaluation")
+
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  @@unique([candidateId, jobId])
+  @@map("candidate_jobs")
+}
+
+// ─── ETL run log ──────────────────────────────────────────────────────────────
+
+model EtlRunLog {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runAt        DateTime  @default(now()) @map("run_at")
+  runStatus    String    @map("run_status")
+  totalFound   Int       @default(0) @map("total_found")
+  processed    Int       @default(0)
+  skipped      Int       @default(0)
+  failed       Int       @default(0)
+  errorDetails Json      @default("[]") @map("error_details")
+  completedAt  DateTime? @map("completed_at")
+
+  @@map("etl_run_log")
+}
