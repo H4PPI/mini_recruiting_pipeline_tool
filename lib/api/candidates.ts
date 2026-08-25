@@ -37,3 +37,16 @@ export async function updateCandidateStage(candidateId: string, stage: PipelineS
   if (!res.ok) throw new Error("Failed to update candidate stage");
   return res.json();
 }
+
+export async function updateCandidateAssignees(
+  candidateId: string,
+  assignees: { name: string; email: string }[]
+) {
+  const res = await fetch(`/api/candidates/${candidateId}/assignees`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ assignees }),
+  });
+  if (!res.ok) throw new Error("Failed to update candidate assignees");
+  return res.json();
+}

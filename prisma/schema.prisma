@@ -41,6 +41,10 @@ model Candidate {
   ingestedAt          DateTime  @default(now()) @map("ingested_at")
   pipelineStatus      String    @default("pending") @map("pipeline_status")
 
+  // HR users assigned to review/own this candidate in the tracker.
+  // Shape: [{ name: string, email: string }, ...]
+  assignees           Json      @default("[]")
+
   jobs                CandidateJob[]
 
   @@map("candidates")

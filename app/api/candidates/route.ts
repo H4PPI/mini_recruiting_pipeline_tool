@@ -20,6 +20,12 @@ export async function GET(request: NextRequest) {
     const rows = await prisma.candidate.findMany({
       where,
       orderBy: { ingestedAt: "desc" },
+      include: {
+        jobs: {
+          include: { job: true },
+          orderBy: { matchScore: "desc" },
+        },
+      },
     });
     return NextResponse.json(rows);
   } catch (err) {
