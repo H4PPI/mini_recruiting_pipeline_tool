@@ -14,12 +14,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       data: { pipelineStatus: INITIAL_PIPELINE_STAGE },
     });
 
-    // If candidateJobId provided, mark that CandidateJob as approved
+    // If candidateJobId provided, note which job match this approval was
+    // based on. (CandidateJob has no separate `status` field — approval is
+    // tracked via Candidate.pipelineStatus above.)
     if (candidateJobId) {
-      await prisma.candidateJob.updateMany({
+      const exists = await prisma.candidateJob.findUnique({
         where: { id: candidateJobId },
-        data: { status: "approved" },
+        select: { id: true },
       });
+      if (!exists) {
+        return NextResponse.json(
+          { ok: false, error: "candidateJobId not found" },
+          { status: 404 }
+        );
+      }
     }
 
     return NextResponse.json({ ok: true });
