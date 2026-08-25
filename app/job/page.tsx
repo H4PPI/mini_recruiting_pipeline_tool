@@ -1,6 +1,7 @@
 "use client";
 
 import MainLayout from "../components/MainLayout";
+import Link from "next/link";
 import { useState, useEffect } from "react";
 import JobForm from "../components/jobs/JobForm";
 import JobList from "../components/jobs/JobList";
@@ -27,6 +28,9 @@ export default function JobsPage() {
   const [rematchResult, setRematchResult] = useState<{
     type: "success" | "error";
     message: string;
+  } | null>(null);
+  const [approvedStatus, setApprovedStatus] = useState<{
+    candidateName: string;
   } | null>(null);
 
   const loadJobs = () => {
@@ -164,9 +168,15 @@ export default function JobsPage() {
     );
 
     if (!candidateId) return;
-    approveCandidate(candidateId, candidateJobId).catch((err) => {
-      console.error("Approve API failed", err);
-    });
+    approveCandidate(candidateId, candidateJobId)
+      .then(() => {
+        setApprovedStatus({
+          candidateName: cj?.candidate?.fullName || "Candidate",
+        });
+      })
+      .catch((err) => {
+        console.error("Approve API failed", err);
+      });
   };
 
   useEffect(() => {
@@ -424,6 +434,36 @@ export default function JobsPage() {
           </div>
         </div>
       </div>
+
+      {approvedStatus && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-sm w-full p-6 text-center">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
+              <span className="text-2xl">✓</span>
+            </div>
+            <h3 className="text-lg font-bold text-black mb-1">Approved!</h3>
+            <p className="text-sm text-black/60 mb-6">
+              {approvedStatus.candidateName} has been moved to the Application
+              Tracker pipeline.
+            </p>
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="flex-1"
+                onClick={() => setApprovedStatus(null)}
+              >
+                Stay here
+              </Button>
+              <Link href="/application-tracker" className="flex-1">
+                <Button size="sm" className="w-full">
+                  Go to Tracker
+                </Button>
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
     </MainLayout>
   );
 }
