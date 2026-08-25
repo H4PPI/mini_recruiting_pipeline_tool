@@ -8,6 +8,7 @@ import {
   fetchTrackerCandidates,
   updateCandidateStage,
   updateCandidateAssignees,
+  updateCandidateSchedule,
 } from "@/lib/api/candidates";
 import { serializeCandidateJob } from "@/lib/jobs/serialize";
 
@@ -46,9 +47,20 @@ interface Applicant {
   strengths?: string[];
   followUpQuestions?: string[];
   candidateId?: string;
+  // ISO datetime string for the scheduled call/interview/offer discussion
+  // tied to the candidate's current stage (only used in the stages listed
+  // in SCHEDULABLE_STAGES below).
+  scheduledAt?: string | null;
 }
 
 const stages: Stage[] = [...PIPELINE_STAGES];
+
+// Stages where HR schedules a specific date/time with the candidate.
+const SCHEDULABLE_STAGES: Stage[] = [
+  "Pre-Screen Pending",
+  "First Interview",
+  "Offer",
+];
 
 // applicants are loaded from the database during runtime
 
@@ -58,6 +70,27 @@ const HR_USERS = [
   { name: "Korn Poon", email: "korn.poon@hotelplus.co" },
   { name: "Mali Ratan", email: "mali.ratan@hotelplus.co" },
 ];
+
+// Converts an ISO datetime string to the "YYYY-MM-DDTHH:mm" format the
+// native <input type="datetime-local"> expects (in local time).
+function toDatetimeLocalValue(iso?: string | null): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
+    date.getDate()
+  )}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// Converts a "YYYY-MM-DDTHH:mm" datetime-local value back to an ISO string
+// (or null if cleared).
+function fromDatetimeLocalValue(value: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
 
 export default function ApplicationTrackerPage() {
   const [rows, setRows] = useState<Applicant[]>([]);
@@ -121,6 +154,7 @@ export default function ApplicationTrackerPage() {
             strengths: bestMatch?.strengths || [],
             followUpQuestions: bestMatch?.followUpQuestions || [],
             candidateId: c.id,
+            scheduledAt: c.scheduledAt || null,
           };
         });
         setRows(mapped);
@@ -173,6 +207,18 @@ export default function ApplicationTrackerPage() {
     });
   };
 
+  const updateSchedule = (applicantId: string, scheduledAt: string | null) => {
+    setRows((currentRows) =>
+      currentRows.map((row) =>
+        row.id === applicantId ? { ...row, scheduledAt } : row
+      )
+    );
+
+    updateCandidateSchedule(applicantId, scheduledAt).catch((err) => {
+      console.error("Failed to persist candidate schedule:", err);
+    });
+  };
+
   const selectedApplicant = rows.find((row) => row.id === selectedApplicantId) || null;
 
   return (
@@ -187,7 +233,6 @@ export default function ApplicationTrackerPage() {
               Track HR-approved candidates through the hiring pipeline.
             </p>
           </div>
-          <Button className="lg:w-auto">+ Add Applicant</Button>
         </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -253,12 +298,14 @@ export default function ApplicationTrackerPage() {
             applicants={filteredRows}
             onStageChange={updateStage}
             onAssigneesChange={updateAssignees}
+            onScheduleChange={updateSchedule}
             onOpenDetail={setSelectedApplicantId}
           />
         ) : (
           <ApplicantTable
             applicants={filteredRows}
             onStageChange={updateStage}
+            onScheduleChange={updateSchedule}
             onOpenDetail={setSelectedApplicantId}
           />
         )}
@@ -269,6 +316,7 @@ export default function ApplicationTrackerPage() {
           applicant={selectedApplicant}
           onClose={() => setSelectedApplicantId(null)}
           onAssigneesChange={updateAssignees}
+          onScheduleChange={updateSchedule}
         />
       )}
     </MainLayout>
@@ -324,6 +372,7 @@ interface TrackerViewProps {
     applicantId: string,
     assignees: { name: string; email: string }[]
   ) => void;
+  onScheduleChange?: (applicantId: string, scheduledAt: string | null) => void;
   onOpenDetail: (applicantId: string) => void;
 }
 
@@ -331,6 +380,7 @@ function PipelineBoard({
   applicants,
   onStageChange,
   onAssigneesChange,
+  onScheduleChange,
   onOpenDetail,
 }: TrackerViewProps) {
   return (
@@ -361,6 +411,7 @@ function PipelineBoard({
                     applicant={applicant}
                     onStageChange={onStageChange}
                     onAssigneesChange={onAssigneesChange}
+                    onScheduleChange={onScheduleChange}
                     onOpenDetail={onOpenDetail}
                   />
                 ))}
@@ -380,6 +431,7 @@ interface ApplicantCardProps {
     applicantId: string,
     assignees: { name: string; email: string }[]
   ) => void;
+  onScheduleChange?: (applicantId: string, scheduledAt: string | null) => void;
   onOpenDetail: (applicantId: string) => void;
 }
 
@@ -387,6 +439,7 @@ function ApplicantCard({
   applicant,
   onStageChange,
   onAssigneesChange,
+  onScheduleChange,
   onOpenDetail,
 }: ApplicantCardProps) {
   const assignees = applicant.assignees || [];
@@ -441,6 +494,24 @@ function ApplicantCard({
       <p className="mb-3 rounded bg-black/5 p-2 text-xs text-black/70">
         {applicant.nextAction}
       </p>
+      {SCHEDULABLE_STAGES.includes(applicant.stage) && onScheduleChange && (
+        <div className="mb-3" onClick={(e) => e.stopPropagation()}>
+          <label className="block text-xs font-semibold text-black/60 mb-1">
+            Scheduled at
+          </label>
+          <input
+            type="datetime-local"
+            value={toDatetimeLocalValue(applicant.scheduledAt)}
+            onChange={(e) =>
+              onScheduleChange(
+                applicant.id,
+                fromDatetimeLocalValue(e.target.value)
+              )
+            }
+            className="w-full rounded border border-black/20 bg-white px-2 py-1.5 text-xs text-black focus:outline-none focus:border-mainYellow"
+          />
+        </div>
+      )}
       <select
         value={applicant.stage}
         onClick={(e) => e.stopPropagation()}
@@ -466,12 +537,14 @@ interface CandidateDetailModalProps {
     applicantId: string,
     assignees: { name: string; email: string }[]
   ) => void;
+  onScheduleChange?: (applicantId: string, scheduledAt: string | null) => void;
 }
 
 function CandidateDetailModal({
   applicant,
   onClose,
   onAssigneesChange,
+  onScheduleChange,
 }: CandidateDetailModalProps) {
   const assignees = applicant.assignees || [];
   const scoreBreakdown = applicant.scoreBreakdown;
@@ -604,6 +677,26 @@ function CandidateDetailModal({
           </div>
         )}
 
+        {/* Schedule field */}
+        {SCHEDULABLE_STAGES.includes(applicant.stage) && onScheduleChange && (
+          <div className="mb-4">
+            <label className="block text-xs font-semibold text-black/60 mb-2">
+              Scheduled at
+            </label>
+            <input
+              type="datetime-local"
+              value={toDatetimeLocalValue(applicant.scheduledAt)}
+              onChange={(e) =>
+                onScheduleChange(
+                  applicant.id,
+                  fromDatetimeLocalValue(e.target.value)
+                )
+              }
+              className="w-full rounded border border-black/20 bg-white px-3 py-2 text-sm text-black focus:outline-none focus:border-mainYellow"
+            />
+          </div>
+        )}
+
         {/* Assignee field */}
         <div className="mb-4">
           <label className="block text-xs font-semibold text-black/60 mb-2">
@@ -653,7 +746,12 @@ function CandidateDetailModal({
   );
 }
 
-function ApplicantTable({ applicants, onStageChange, onOpenDetail }: TrackerViewProps) {
+function ApplicantTable({
+  applicants,
+  onStageChange,
+  onScheduleChange,
+  onOpenDetail,
+}: TrackerViewProps) {
   return (
     <div className="bg-white border border-black/10 rounded-lg overflow-hidden">
       <div className="overflow-x-auto">
@@ -666,6 +764,7 @@ function ApplicantTable({ applicants, onStageChange, onOpenDetail }: TrackerView
               <TableHead>Applied</TableHead>
               <TableHead>Match</TableHead>
               <TableHead>Stage</TableHead>
+              <TableHead>Scheduled</TableHead>
               <TableHead>Next action</TableHead>
             </tr>
           </thead>
@@ -707,6 +806,24 @@ function ApplicantTable({ applicants, onStageChange, onOpenDetail }: TrackerView
                       </option>
                     ))}
                   </select>
+                </td>
+                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                  {SCHEDULABLE_STAGES.includes(applicant.stage) &&
+                  onScheduleChange ? (
+                    <input
+                      type="datetime-local"
+                      value={toDatetimeLocalValue(applicant.scheduledAt)}
+                      onChange={(e) =>
+                        onScheduleChange(
+                          applicant.id,
+                          fromDatetimeLocalValue(e.target.value)
+                        )
+                      }
+                      className="w-full rounded border border-black/20 bg-white px-2 py-2 text-sm text-black focus:outline-none focus:border-mainYellow"
+                    />
+                  ) : (
+                    <span className="text-xs text-black/40">—</span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-sm text-black/70">
                   {applicant.nextAction}

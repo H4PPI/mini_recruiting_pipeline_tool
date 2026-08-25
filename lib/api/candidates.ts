@@ -50,3 +50,16 @@ export async function updateCandidateAssignees(
   if (!res.ok) throw new Error("Failed to update candidate assignees");
   return res.json();
 }
+
+export async function updateCandidateSchedule(
+  candidateId: string,
+  scheduledAt: string | null
+) {
+  const res = await fetch(`/api/candidates/${candidateId}/schedule`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scheduledAt }),
+  });
+  if (!res.ok) throw new Error("Failed to update candidate schedule");
+  return res.json();
+}

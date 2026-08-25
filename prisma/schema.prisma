@@ -45,6 +45,10 @@ model Candidate {
   // Shape: [{ name: string, email: string }, ...]
   assignees           Json      @default("[]")
 
+  // Scheduled date/time for the candidate's current pipeline stage
+  // (Pre-Screen Call, First Interview, Offer discussion, etc.).
+  scheduledAt         DateTime? @map("scheduled_at")
+
   jobs                CandidateJob[]
 
   @@map("candidates")
