@@ -49,6 +49,11 @@ model Candidate {
   // (Pre-Screen Call, First Interview, Offer discussion, etc.).
   scheduledAt         DateTime? @map("scheduled_at")
 
+  // Auto-created Google Calendar / Meet event for the scheduled interview.
+  interviewAttendees  Json      @default("[]") @map("interview_attendees")
+  googleEventId       String?   @map("google_event_id")
+  googleMeetLink      String?   @map("google_meet_link")
+
   jobs                CandidateJob[]
 
   @@map("candidates")

@@ -15,6 +15,8 @@ interface ScheduledCandidate {
   stage: PipelineStage;
   scheduledAt: string;
   assignees: { name: string; email: string }[];
+  googleMeetLink: string | null;
+  interviewAttendees: string[];
 }
 
 // Stages that carry a scheduled date/time (kept in sync with the
@@ -58,6 +60,10 @@ export default function InterviewSchedulePage() {
               stage: c.pipelineStatus as PipelineStage,
               scheduledAt: c.scheduledAt,
               assignees: c.assignees || [],
+              googleMeetLink: c.googleMeetLink || null,
+              interviewAttendees: Array.isArray(c.interviewAttendees)
+                ? c.interviewAttendees
+                : [],
             };
           })
           .sort(
@@ -183,6 +189,16 @@ export default function InterviewSchedulePage() {
                               </span>
                             ))}
                           </div>
+                        )}
+                        {item.googleMeetLink && (
+                          <a
+                            href={item.googleMeetLink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-xs font-semibold text-blue-600 hover:underline"
+                          >
+                            Join Google Meet →
+                          </a>
                         )}
                       </div>
                     </div>

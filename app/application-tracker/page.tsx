@@ -9,6 +9,7 @@ import {
   updateCandidateStage,
   updateCandidateAssignees,
   updateCandidateSchedule,
+  scheduleCandidateInterview,
 } from "@/lib/api/candidates";
 import { serializeCandidateJob } from "@/lib/jobs/serialize";
 
@@ -51,6 +52,10 @@ interface Applicant {
   // tied to the candidate's current stage (only used in the stages listed
   // in SCHEDULABLE_STAGES below).
   scheduledAt?: string | null;
+  // Auto-created Google Meet link + invited attendee emails (only set for
+  // MEETING_STAGES once a meeting has been scheduled).
+  googleMeetLink?: string | null;
+  interviewAttendees?: string[];
 }
 
 const stages: Stage[] = [...PIPELINE_STAGES];
@@ -61,6 +66,10 @@ const SCHEDULABLE_STAGES: Stage[] = [
   "First Interview",
   "Offer",
 ];
+
+// Stages that auto-open the Google Meet scheduling modal when a card moves
+// into them.
+const MEETING_STAGES: Stage[] = ["First Interview", "Offer"];
 
 // applicants are loaded from the database during runtime
 
@@ -100,6 +109,10 @@ export default function ApplicationTrackerPage() {
   const [sourceFilter, setSourceFilter] = useState<Source | "All">("All");
   const [viewMode, setViewMode] = useState<"board" | "list">("board");
   const [selectedApplicantId, setSelectedApplicantId] = useState<string | null>(null);
+  const [meetingRequest, setMeetingRequest] = useState<{
+    applicantId: string;
+    stage: Stage;
+  } | null>(null);
 
   const positions = useMemo(
     () => ["All", ...Array.from(new Set(rows.map((row) => row.position)))],
@@ -155,6 +168,10 @@ export default function ApplicationTrackerPage() {
             followUpQuestions: bestMatch?.followUpQuestions || [],
             candidateId: c.id,
             scheduledAt: c.scheduledAt || null,
+            googleMeetLink: c.googleMeetLink || null,
+            interviewAttendees: Array.isArray(c.interviewAttendees)
+              ? c.interviewAttendees
+              : [],
           };
         });
         setRows(mapped);
@@ -190,6 +207,35 @@ export default function ApplicationTrackerPage() {
     updateCandidateStage(applicantId, stage).catch((err) => {
       console.error("Failed to persist candidate stage:", err);
     });
+
+    // Moving a card into First Interview / Offer prompts HR to schedule the
+    // call right away — auto-creating a Google Meet event.
+    if (MEETING_STAGES.includes(stage)) {
+      setMeetingRequest({ applicantId, stage });
+    }
+  };
+
+  const handleMeetingScheduled = (
+    applicantId: string,
+    result: {
+      scheduledAt: string;
+      attendees: string[];
+      googleMeetLink: string | null;
+    }
+  ) => {
+    setRows((currentRows) =>
+      currentRows.map((row) =>
+        row.id === applicantId
+          ? {
+              ...row,
+              scheduledAt: result.scheduledAt,
+              interviewAttendees: result.attendees,
+              googleMeetLink: result.googleMeetLink,
+            }
+          : row
+      )
+    );
+    setMeetingRequest(null);
   };
 
   const updateAssignees = (
@@ -220,6 +266,9 @@ export default function ApplicationTrackerPage() {
   };
 
   const selectedApplicant = rows.find((row) => row.id === selectedApplicantId) || null;
+  const meetingApplicant = meetingRequest
+    ? rows.find((row) => row.id === meetingRequest.applicantId) || null
+    : null;
 
   return (
     <MainLayout>
@@ -317,6 +366,15 @@ export default function ApplicationTrackerPage() {
           onClose={() => setSelectedApplicantId(null)}
           onAssigneesChange={updateAssignees}
           onScheduleChange={updateSchedule}
+        />
+      )}
+
+      {meetingApplicant && meetingRequest && (
+        <ScheduleInterviewModal
+          applicant={meetingApplicant}
+          stage={meetingRequest.stage}
+          onClose={() => setMeetingRequest(null)}
+          onScheduled={handleMeetingScheduled}
         />
       )}
     </MainLayout>
@@ -510,6 +568,17 @@ function ApplicantCard({
             }
             className="w-full rounded border border-black/20 bg-white px-2 py-1.5 text-xs text-black focus:outline-none focus:border-mainYellow"
           />
+          {applicant.googleMeetLink && (
+            <a
+              href={applicant.googleMeetLink}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="mt-1 inline-block text-xs font-semibold text-blue-600 hover:underline"
+            >
+              Join Google Meet →
+            </a>
+          )}
         </div>
       )}
       <select
@@ -694,6 +763,21 @@ function CandidateDetailModal({
               }
               className="w-full rounded border border-black/20 bg-white px-3 py-2 text-sm text-black focus:outline-none focus:border-mainYellow"
             />
+            {applicant.googleMeetLink && (
+              <a
+                href={applicant.googleMeetLink}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-block text-xs font-semibold text-blue-600 hover:underline"
+              >
+                Join Google Meet →
+              </a>
+            )}
+            {applicant.interviewAttendees && applicant.interviewAttendees.length > 0 && (
+              <p className="mt-1 text-xs text-black/50">
+                Attendees: {applicant.interviewAttendees.join(", ")}
+              </p>
+            )}
           </div>
         )}
 
@@ -741,6 +825,192 @@ function CandidateDetailModal({
             </a>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+interface ScheduleInterviewModalProps {
+  applicant: Applicant;
+  stage: Stage;
+  onClose: () => void;
+  onScheduled: (
+    applicantId: string,
+    result: {
+      scheduledAt: string;
+      attendees: string[];
+      googleMeetLink: string | null;
+    }
+  ) => void;
+}
+
+function ScheduleInterviewModal({
+  applicant,
+  stage,
+  onClose,
+  onScheduled,
+}: ScheduleInterviewModalProps) {
+  const [dateValue, setDateValue] = useState(
+    toDatetimeLocalValue(applicant.scheduledAt)
+  );
+  const [attendees, setAttendees] = useState<string[]>(
+    applicant.interviewAttendees || (applicant.email ? [applicant.email] : [])
+  );
+  const [attendeeInput, setAttendeeInput] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const emailRe = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/;
+
+  function addAttendeeFromInput() {
+    const value = attendeeInput.trim().replace(/,$/, "");
+    if (!value) return;
+    if (!emailRe.test(value)) {
+      setError(`"${value}" is not a valid email`);
+      return;
+    }
+    if (!attendees.includes(value)) {
+      setAttendees((prev) => [...prev, value]);
+    }
+    setAttendeeInput("");
+    setError(null);
+  }
+
+  function removeAttendee(email: string) {
+    setAttendees((prev) => prev.filter((a) => a !== email));
+  }
+
+  async function handleSubmit() {
+    setError(null);
+    const scheduledAt = fromDatetimeLocalValue(dateValue);
+    if (!scheduledAt) {
+      setError("Please pick a date and time.");
+      return;
+    }
+    if (attendees.length === 0) {
+      setError("Add at least one attendee email.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const res = await scheduleCandidateInterview(applicant.id, {
+        scheduledAt,
+        attendees,
+        stage,
+        description: `${stage} with ${applicant.name} for ${applicant.position}`,
+      });
+      onScheduled(applicant.id, {
+        scheduledAt: res.candidate.scheduledAt,
+        attendees,
+        googleMeetLink: res.meeting?.meetLink ?? res.candidate.googleMeetLink ?? null,
+      });
+    } catch (err: any) {
+      setError(err?.message || "Failed to schedule interview");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-lg bg-white p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 mb-1">
+          <h2 className="text-lg font-bold text-black">
+            Schedule {stage}
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-black/50 hover:text-black text-xl leading-none"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <p className="text-sm text-black/60 mb-4">
+          {applicant.name} — auto-creates a Google Meet event and invites the
+          attendees below.
+        </p>
+
+        <div className="mb-4">
+          <label className="block text-xs font-semibold text-black/60 mb-2">
+            Date &amp; time
+          </label>
+          <input
+            type="datetime-local"
+            value={dateValue}
+            onChange={(e) => setDateValue(e.target.value)}
+            className="w-full rounded border border-black/20 bg-white px-3 py-2 text-sm text-black focus:outline-none focus:border-mainYellow"
+          />
+        </div>
+
+        <div className="mb-2">
+          <label className="block text-xs font-semibold text-black/60 mb-2">
+            Attendee emails
+          </label>
+          {/* Free-text email input (instead of an HR user picker) so HR can
+              type any address — including test emails — for the invite. */}
+          {attendees.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {attendees.map((email) => (
+                <span
+                  key={email}
+                  className="inline-flex items-center gap-2 px-3 py-1 bg-mainYellow text-black text-xs rounded-full font-medium"
+                >
+                  {email}
+                  <button
+                    type="button"
+                    onClick={() => removeAttendee(email)}
+                    className="ml-1 hover:opacity-70"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <input
+            type="email"
+            value={attendeeInput}
+            placeholder="name@example.com and press Enter"
+            onChange={(e) => setAttendeeInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === ",") {
+                e.preventDefault();
+                addAttendeeFromInput();
+              }
+            }}
+            onBlur={addAttendeeFromInput}
+            className="w-full rounded border border-black/20 bg-white px-3 py-2 text-sm text-black focus:outline-none focus:border-mainYellow"
+          />
+        </div>
+
+        {error && <p className="text-xs text-red-600 mb-3">{error}</p>}
+
+        <div className="flex justify-end gap-2 mt-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-2 text-sm font-semibold text-black/60 hover:text-black"
+          >
+            Skip for now
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting}
+            className="px-4 py-2 bg-mainYellow text-black rounded font-semibold hover:bg-yellow-500 transition-colors text-sm disabled:opacity-50"
+          >
+            {submitting ? "Creating meeting…" : "Create Google Meet"}
+          </button>
+        </div>
       </div>
     </div>
   );

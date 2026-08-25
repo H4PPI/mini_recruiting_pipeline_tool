@@ -47,6 +47,67 @@ const CRITERION_SCHEMA = {
   required: ["score", "reasoning", "evidence"],
 };
 
+// ─── PII leak guard ────────────────────────────────────────────────────────────
+// Defensive re-check run right before anything is sent to the AI. `maskPII`
+// should have already replaced these patterns with tokens; if any of them
+// still match here, masking failed and we log a loud warning so it can be
+// investigated instead of silently leaking PII to Gemini.
+const LEAK_CHECK_PATTERNS: { label: string; re: RegExp }[] = [
+  { label: "email", re: /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g },
+  {
+    label: "phone",
+    re: /(?:\+?66|0)[\s\-]?[689]\d[\s\-]?\d{3}[\s\-]?\d{4}|(?:\+\d{1,3}[\s\-]?)?\(?\d{3}\)?[\s\-]\d{3}[\s\-]\d{4}/g,
+  },
+  { label: "national_id", re: /\b\d{13}\b/g },
+  { label: "passport", re: /\b[A-Z]{1,2}\d{7,8}\b/g },
+];
+
+function findPiiLeaks(text: string): string[] {
+  const leaks: string[] = [];
+  for (const { label, re } of LEAK_CHECK_PATTERNS) {
+    re.lastIndex = 0;
+    if (re.test(text)) leaks.push(label);
+  }
+  return leaks;
+}
+
+/**
+ * Logs exactly what is about to be sent to the AI provider so PII masking
+ * can be audited. Enabled by default; set AI_SCREENER_LOG_PAYLOAD=false to
+ * silence it (e.g. in noisy CI environments).
+ */
+function logOutboundPayload(params: {
+  position: string;
+  jdText: string;
+  maskedText: string;
+}) {
+  if (process.env.AI_SCREENER_LOG_PAYLOAD === "false") return;
+
+  const leaks = [
+    ...findPiiLeaks(params.maskedText).map((l) => `resume:${l}`),
+    ...findPiiLeaks(params.jdText).map((l) => `jd:${l}`),
+  ];
+
+  if (leaks.length > 0) {
+    console.warn(
+      `[ai-screener] ⚠️ Possible PII leak detected before sending to AI (position="${params.position}"): ${leaks.join(", ")}`
+    );
+  }
+
+  console.log(
+    `[ai-screener] Sending to AI — position="${params.position}" ` +
+      `jdText(${params.jdText.length} chars) maskedResume(${params.maskedText.length} chars) ` +
+      `piiLeaksDetected=${leaks.length > 0 ? leaks.join(",") : "none"}`
+  );
+  // Full payload preview (truncated) for manual inspection — this is the
+  // masked text, never the raw resume, so it's safe to log.
+  console.log(
+    `[ai-screener] Masked resume preview: ${params.maskedText.slice(0, 500)}${
+      params.maskedText.length > 500 ? "…" : ""
+    }`
+  );
+}
+
 function buildSystemPrompt(position: string) {
   return SYSTEM_PROMPT.replace("{{POSITION}}", position || DEFAULT_POSITION);
 }
@@ -122,6 +183,8 @@ export async function evaluateCandidateAgainstJD(
       `  "followUpQuestions": string[],\n` +
       `  "shortlistReason": string\n` +
       `}`;
+
+    logOutboundPayload({ position, jdText: jdText || "", maskedText });
 
     const model = process.env.GEMINI_MODEL || "gemini-3.6-flash";
     const resp = await fetch(

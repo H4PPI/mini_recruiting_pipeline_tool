@@ -63,3 +63,25 @@ export async function updateCandidateSchedule(
   if (!res.ok) throw new Error("Failed to update candidate schedule");
   return res.json();
 }
+
+export async function scheduleCandidateInterview(
+  candidateId: string,
+  payload: {
+    scheduledAt: string;
+    attendees: string[];
+    stage?: string;
+    description?: string;
+    durationMinutes?: number;
+  }
+) {
+  const res = await fetch(`/api/candidates/${candidateId}/interview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || "Failed to schedule interview");
+  }
+  return res.json();
+}
