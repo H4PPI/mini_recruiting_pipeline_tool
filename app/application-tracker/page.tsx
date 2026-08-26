@@ -10,6 +10,7 @@ import {
   updateCandidateAssignees,
   updateCandidateSchedule,
   scheduleCandidateInterview,
+  cancelCandidateInterview,
 } from "@/lib/api/candidates";
 import { serializeCandidateJob } from "@/lib/jobs/serialize";
 
@@ -34,7 +35,6 @@ interface Applicant {
   appliedAt: string;
   matchScore: number;
   owner: string;
-  nextAction: string;
   assignees?: { name: string; email: string }[];
   // Extra detail fields shown in the candidate detail modal (mirrors the
   // Jobs page candidate card). These may be absent depending on the data
@@ -70,6 +70,16 @@ const SCHEDULABLE_STAGES: Stage[] = [
 // Stages that auto-open the Google Meet scheduling modal when a card moves
 // into them.
 const MEETING_STAGES: Stage[] = ["First Interview", "Offer"];
+
+// Subtle per-stage accent colors so columns/badges are easy to tell apart
+// at a glance without overwhelming the UI with color everywhere.
+const STAGE_COLORS: Record<Stage, { border: string; badge: string }> = {
+  "Pre-Screen Pending": { border: "border-t-blue-400", badge: "bg-blue-100 text-blue-800" },
+  "First Interview": { border: "border-t-purple-400", badge: "bg-purple-100 text-purple-800" },
+  Offer: { border: "border-t-amber-400", badge: "bg-amber-100 text-amber-800" },
+  Hired: { border: "border-t-green-400", badge: "bg-green-100 text-green-800" },
+  Rejected: { border: "border-t-red-400", badge: "bg-red-100 text-red-800" },
+};
 
 // applicants are loaded from the database during runtime
 
@@ -156,7 +166,6 @@ export default function ApplicationTrackerPage() {
             appliedAt: c.ingestedAt ? new Date(c.ingestedAt).toLocaleDateString() : "",
             matchScore: Math.round((bestMatch?.matchScore ?? 0) * 100),
             owner: "",
-            nextAction: "",
             assignees: c.assignees || [],
             scoreBreakdown: bestMatch?.scoreBreakdown,
             shortlistReason: bestMatch?.shortlistReason,
@@ -265,6 +274,34 @@ export default function ApplicationTrackerPage() {
     });
   };
 
+  // Opens the Google Meet scheduling modal on demand (used for both the
+  // initial "Schedule now" action and for rescheduling an existing meeting).
+  const openScheduleModal = (applicantId: string, stage: Stage) => {
+    setMeetingRequest({ applicantId, stage });
+  };
+
+  // Cancels a candidate's currently scheduled meeting: removes the Google
+  // Calendar event and clears the schedule fields so the card goes back to
+  // "awaiting scheduling" and can be rescheduled from scratch.
+  const cancelMeeting = (applicantId: string) => {
+    setRows((currentRows) =>
+      currentRows.map((row) =>
+        row.id === applicantId
+          ? {
+              ...row,
+              scheduledAt: null,
+              googleMeetLink: null,
+              interviewAttendees: [],
+            }
+          : row
+      )
+    );
+
+    cancelCandidateInterview(applicantId).catch((err) => {
+      console.error("Failed to cancel candidate interview:", err);
+    });
+  };
+
   const selectedApplicant = rows.find((row) => row.id === selectedApplicantId) || null;
   const meetingApplicant = meetingRequest
     ? rows.find((row) => row.id === meetingRequest.applicantId) || null
@@ -349,6 +386,8 @@ export default function ApplicationTrackerPage() {
             onAssigneesChange={updateAssignees}
             onScheduleChange={updateSchedule}
             onOpenDetail={setSelectedApplicantId}
+            onOpenScheduleModal={openScheduleModal}
+            onCancelMeeting={cancelMeeting}
           />
         ) : (
           <ApplicantTable
@@ -356,6 +395,8 @@ export default function ApplicationTrackerPage() {
             onStageChange={updateStage}
             onScheduleChange={updateSchedule}
             onOpenDetail={setSelectedApplicantId}
+            onOpenScheduleModal={openScheduleModal}
+            onCancelMeeting={cancelMeeting}
           />
         )}
       </div>
@@ -366,6 +407,8 @@ export default function ApplicationTrackerPage() {
           onClose={() => setSelectedApplicantId(null)}
           onAssigneesChange={updateAssignees}
           onScheduleChange={updateSchedule}
+          onOpenScheduleModal={openScheduleModal}
+          onCancelMeeting={cancelMeeting}
         />
       )}
 
@@ -432,6 +475,8 @@ interface TrackerViewProps {
   ) => void;
   onScheduleChange?: (applicantId: string, scheduledAt: string | null) => void;
   onOpenDetail: (applicantId: string) => void;
+  onOpenScheduleModal?: (applicantId: string, stage: Stage) => void;
+  onCancelMeeting?: (applicantId: string) => void;
 }
 
 function PipelineBoard({
@@ -440,16 +485,24 @@ function PipelineBoard({
   onAssigneesChange,
   onScheduleChange,
   onOpenDetail,
+  onOpenScheduleModal,
+  onCancelMeeting,
 }: TrackerViewProps) {
   return (
     <div className="overflow-x-auto pb-2">
-      <div className="grid min-w-[2000px] grid-cols-7 gap-3">
+      <div
+        className="grid gap-3"
+        style={{
+          gridTemplateColumns: `repeat(${stages.length}, minmax(260px, 1fr))`,
+          minWidth: stages.length * 260 + (stages.length - 1) * 12,
+        }}
+      >
         {stages.map((stage) => {
           const stageApplicants = applicants.filter((row) => row.stage === stage);
           return (
             <div
               key={stage}
-              className="bg-black/[0.03] border border-black/10 rounded-lg p-3 max-h-[640px] overflow-y-auto min-w-[260px]"
+              className={`bg-black/[0.03] border border-t-4 ${STAGE_COLORS[stage].border} border-black/10 rounded-lg p-3 max-h-[640px] overflow-y-auto min-w-[260px]`}
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 const id = e.dataTransfer.getData("text/applicant-id");
@@ -458,7 +511,7 @@ function PipelineBoard({
             >
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-sm font-bold text-black">{stage}</h2>
-                <span className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-black/60">
+                <span className={`rounded-full px-2 py-1 text-xs font-semibold ${STAGE_COLORS[stage].badge}`}>
                   {stageApplicants.length}
                 </span>
               </div>
@@ -491,6 +544,8 @@ interface ApplicantCardProps {
   ) => void;
   onScheduleChange?: (applicantId: string, scheduledAt: string | null) => void;
   onOpenDetail: (applicantId: string) => void;
+  onOpenScheduleModal?: (applicantId: string, stage: Stage) => void;
+  onCancelMeeting?: (applicantId: string) => void;
 }
 
 function ApplicantCard({
@@ -499,6 +554,8 @@ function ApplicantCard({
   onAssigneesChange,
   onScheduleChange,
   onOpenDetail,
+  onOpenScheduleModal,
+  onCancelMeeting,
 }: ApplicantCardProps) {
   const assignees = applicant.assignees || [];
 
@@ -549,35 +606,36 @@ function ApplicantCard({
           )}
         </div>
       </div>
-      <p className="mb-3 rounded bg-black/5 p-2 text-xs text-black/70">
-        {applicant.nextAction}
-      </p>
       {SCHEDULABLE_STAGES.includes(applicant.stage) && onScheduleChange && (
         <div className="mb-3" onClick={(e) => e.stopPropagation()}>
-          <label className="block text-xs font-semibold text-black/60 mb-1">
-            Scheduled at
-          </label>
-          <input
-            type="datetime-local"
-            value={toDatetimeLocalValue(applicant.scheduledAt)}
-            onChange={(e) =>
-              onScheduleChange(
-                applicant.id,
-                fromDatetimeLocalValue(e.target.value)
-              )
-            }
-            className="w-full rounded border border-black/20 bg-white px-2 py-1.5 text-xs text-black focus:outline-none focus:border-mainYellow"
-          />
-          {applicant.googleMeetLink && (
-            <a
-              href={applicant.googleMeetLink}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="mt-1 inline-block text-xs font-semibold text-blue-600 hover:underline"
-            >
-              Join Google Meet →
-            </a>
+          {MEETING_STAGES.includes(applicant.stage) ? (
+            <MeetingScheduleStatus
+              applicant={applicant}
+              stage={applicant.stage}
+              onOpenScheduleModal={onOpenScheduleModal}
+              onCancelMeeting={onCancelMeeting}
+              compact
+            />
+          ) : (
+            <>
+              <div className="mb-1 flex items-center justify-between">
+                <label className="block text-xs font-semibold text-black/60">
+                  Scheduled at
+                </label>
+                {!applicant.scheduledAt && <PendingScheduleBadge />}
+              </div>
+              <input
+                type="datetime-local"
+                value={toDatetimeLocalValue(applicant.scheduledAt)}
+                onChange={(e) =>
+                  onScheduleChange(
+                    applicant.id,
+                    fromDatetimeLocalValue(e.target.value)
+                  )
+                }
+                className="w-full rounded border border-black/20 bg-white px-2 py-1.5 text-xs text-black focus:outline-none focus:border-mainYellow"
+              />
+            </>
           )}
         </div>
       )}
@@ -599,6 +657,111 @@ function ApplicantCard({
   );
 }
 
+// Small badge shown on cards/rows that require a meeting/date to be
+// scheduled but don't have one yet.
+function PendingScheduleBadge() {
+  return (
+    <span className="inline-flex items-center rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700">
+      Awaiting scheduling
+    </span>
+  );
+}
+
+// Formats an ISO datetime for display (e.g. "Aug 26, 2026, 2:30 PM").
+function formatScheduledAt(iso?: string | null): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
+interface MeetingScheduleStatusProps {
+  applicant: Applicant;
+  stage: Stage;
+  onOpenScheduleModal?: (applicantId: string, stage: Stage) => void;
+  onCancelMeeting?: (applicantId: string) => void;
+  // Compact mode is used on the board card; the detail modal uses the
+  // slightly roomier default styling.
+  compact?: boolean;
+}
+
+// Shared "awaiting scheduling" / "scheduled + reschedule/cancel" UI for the
+// Google Meet-backed stages (First Interview, Offer). Used by both the
+// board card and the candidate detail modal so the reschedule/cancel
+// behavior is consistent everywhere.
+function MeetingScheduleStatus({
+  applicant,
+  stage,
+  onOpenScheduleModal,
+  onCancelMeeting,
+  compact,
+}: MeetingScheduleStatusProps) {
+  const labelClass = compact
+    ? "text-xs font-semibold text-black/60"
+    : "text-xs font-semibold text-black/60 mb-2";
+
+  if (!applicant.scheduledAt) {
+    return (
+      <div>
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <label className={labelClass}>Meeting</label>
+          <PendingScheduleBadge />
+        </div>
+        {onOpenScheduleModal && (
+          <button
+            type="button"
+            onClick={() => onOpenScheduleModal(applicant.id, stage)}
+            className="w-full rounded border border-black/20 bg-white px-2 py-1.5 text-xs font-semibold text-black hover:border-mainYellow"
+          >
+            Schedule now
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <label className={labelClass}>Meeting</label>
+      <p className="text-xs text-black/70">{formatScheduledAt(applicant.scheduledAt)}</p>
+      {applicant.googleMeetLink && (
+        <a
+          href={applicant.googleMeetLink}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="mt-1 inline-block text-xs font-semibold text-blue-600 hover:underline"
+        >
+          Join Google Meet →
+        </a>
+      )}
+      <div className="mt-2 flex gap-2">
+        {onOpenScheduleModal && (
+          <button
+            type="button"
+            onClick={() => onOpenScheduleModal(applicant.id, stage)}
+            className="flex-1 rounded border border-black/20 bg-white px-2 py-1.5 text-xs font-semibold text-black hover:border-mainYellow"
+          >
+            Reschedule
+          </button>
+        )}
+        {onCancelMeeting && (
+          <button
+            type="button"
+            onClick={() => onCancelMeeting(applicant.id)}
+            className="flex-1 rounded border border-red-200 bg-white px-2 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 interface CandidateDetailModalProps {
   applicant: Applicant;
   onClose: () => void;
@@ -607,6 +770,8 @@ interface CandidateDetailModalProps {
     assignees: { name: string; email: string }[]
   ) => void;
   onScheduleChange?: (applicantId: string, scheduledAt: string | null) => void;
+  onOpenScheduleModal?: (applicantId: string, stage: Stage) => void;
+  onCancelMeeting?: (applicantId: string) => void;
 }
 
 function CandidateDetailModal({
@@ -614,6 +779,8 @@ function CandidateDetailModal({
   onClose,
   onAssigneesChange,
   onScheduleChange,
+  onOpenScheduleModal,
+  onCancelMeeting,
 }: CandidateDetailModalProps) {
   const assignees = applicant.assignees || [];
   const scoreBreakdown = applicant.scoreBreakdown;
@@ -749,29 +916,33 @@ function CandidateDetailModal({
         {/* Schedule field */}
         {SCHEDULABLE_STAGES.includes(applicant.stage) && onScheduleChange && (
           <div className="mb-4">
-            <label className="block text-xs font-semibold text-black/60 mb-2">
-              Scheduled at
-            </label>
-            <input
-              type="datetime-local"
-              value={toDatetimeLocalValue(applicant.scheduledAt)}
-              onChange={(e) =>
-                onScheduleChange(
-                  applicant.id,
-                  fromDatetimeLocalValue(e.target.value)
-                )
-              }
-              className="w-full rounded border border-black/20 bg-white px-3 py-2 text-sm text-black focus:outline-none focus:border-mainYellow"
-            />
-            {applicant.googleMeetLink && (
-              <a
-                href={applicant.googleMeetLink}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-2 inline-block text-xs font-semibold text-blue-600 hover:underline"
-              >
-                Join Google Meet →
-              </a>
+            {MEETING_STAGES.includes(applicant.stage) ? (
+              <MeetingScheduleStatus
+                applicant={applicant}
+                stage={applicant.stage}
+                onOpenScheduleModal={onOpenScheduleModal}
+                onCancelMeeting={onCancelMeeting}
+              />
+            ) : (
+              <>
+                <div className="mb-2 flex items-center justify-between">
+                  <label className="block text-xs font-semibold text-black/60">
+                    Scheduled at
+                  </label>
+                  {!applicant.scheduledAt && <PendingScheduleBadge />}
+                </div>
+                <input
+                  type="datetime-local"
+                  value={toDatetimeLocalValue(applicant.scheduledAt)}
+                  onChange={(e) =>
+                    onScheduleChange(
+                      applicant.id,
+                      fromDatetimeLocalValue(e.target.value)
+                    )
+                  }
+                  className="w-full rounded border border-black/20 bg-white px-3 py-2 text-sm text-black focus:outline-none focus:border-mainYellow"
+                />
+              </>
             )}
             {applicant.interviewAttendees && applicant.interviewAttendees.length > 0 && (
               <p className="mt-1 text-xs text-black/50">
@@ -1021,6 +1192,8 @@ function ApplicantTable({
   onStageChange,
   onScheduleChange,
   onOpenDetail,
+  onOpenScheduleModal,
+  onCancelMeeting,
 }: TrackerViewProps) {
   return (
     <div className="bg-white border border-black/10 rounded-lg overflow-hidden">
@@ -1035,7 +1208,6 @@ function ApplicantTable({
               <TableHead>Match</TableHead>
               <TableHead>Stage</TableHead>
               <TableHead>Scheduled</TableHead>
-              <TableHead>Next action</TableHead>
             </tr>
           </thead>
           <tbody>
@@ -1063,40 +1235,59 @@ function ApplicantTable({
                   {applicant.matchScore}%
                 </td>
                 <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                  <select
-                    value={applicant.stage}
-                    onChange={(event) =>
-                      onStageChange(applicant.id, event.target.value as Stage)
-                    }
-                    className="w-full rounded border border-black/20 bg-white px-2 py-2 text-sm text-black focus:outline-none focus:border-mainYellow"
-                  >
-                    {stages.map((stage) => (
-                      <option key={stage} value={stage}>
-                        {stage}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                  {SCHEDULABLE_STAGES.includes(applicant.stage) &&
-                  onScheduleChange ? (
-                    <input
-                      type="datetime-local"
-                      value={toDatetimeLocalValue(applicant.scheduledAt)}
-                      onChange={(e) =>
-                        onScheduleChange(
-                          applicant.id,
-                          fromDatetimeLocalValue(e.target.value)
-                        )
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`inline-block h-2 w-2 shrink-0 rounded-full ${STAGE_COLORS[applicant.stage].badge.split(" ")[0]}`}
+                    />
+                    <select
+                      value={applicant.stage}
+                      onChange={(event) =>
+                        onStageChange(applicant.id, event.target.value as Stage)
                       }
                       className="w-full rounded border border-black/20 bg-white px-2 py-2 text-sm text-black focus:outline-none focus:border-mainYellow"
-                    />
+                    >
+                      {stages.map((stage) => (
+                        <option key={stage} value={stage}>
+                          {stage}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </td>
+                <td className="px-4 py-3 min-w-[220px]" onClick={(e) => e.stopPropagation()}>
+                  {SCHEDULABLE_STAGES.includes(applicant.stage) &&
+                  onScheduleChange ? (
+                    MEETING_STAGES.includes(applicant.stage) ? (
+                      <MeetingScheduleStatus
+                        applicant={applicant}
+                        stage={applicant.stage}
+                        onOpenScheduleModal={onOpenScheduleModal}
+                        onCancelMeeting={onCancelMeeting}
+                        compact
+                      />
+                    ) : (
+                      <>
+                        {!applicant.scheduledAt && (
+                          <div className="mb-1">
+                            <PendingScheduleBadge />
+                          </div>
+                        )}
+                        <input
+                          type="datetime-local"
+                          value={toDatetimeLocalValue(applicant.scheduledAt)}
+                          onChange={(e) =>
+                            onScheduleChange(
+                              applicant.id,
+                              fromDatetimeLocalValue(e.target.value)
+                            )
+                          }
+                          className="w-full rounded border border-black/20 bg-white px-2 py-2 text-sm text-black focus:outline-none focus:border-mainYellow"
+                        />
+                      </>
+                    )
                   ) : (
                     <span className="text-xs text-black/40">—</span>
                   )}
-                </td>
-                <td className="px-4 py-3 text-sm text-black/70">
-                  {applicant.nextAction}
                 </td>
               </tr>
             ))}

@@ -85,3 +85,14 @@ export async function scheduleCandidateInterview(
   }
   return res.json();
 }
+
+export async function cancelCandidateInterview(candidateId: string) {
+  const res = await fetch(`/api/candidates/${candidateId}/interview`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || "Failed to cancel interview");
+  }
+  return res.json();
+}

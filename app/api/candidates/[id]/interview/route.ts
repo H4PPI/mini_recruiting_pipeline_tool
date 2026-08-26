@@ -103,3 +103,50 @@ export async function POST(
     );
   }
 }
+
+/**
+ * DELETE /api/candidates/[id]/interview
+ *
+ * Cancels a candidate's currently scheduled interview/offer-call: deletes
+ * the Google Calendar event (if one exists) and clears the schedule fields
+ * on the candidate row so it goes back to "awaiting scheduling". The
+ * candidate can then be rescheduled via POST as usual.
+ */
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id: candidateId } = await params;
+
+    const candidate = await prisma.candidate.findUnique({
+      where: { id: candidateId },
+      select: { googleEventId: true },
+    });
+    if (!candidate) {
+      return NextResponse.json({ error: "Candidate not found" }, { status: 404 });
+    }
+
+    if (candidate.googleEventId) {
+      await deleteGoogleMeetEvent(candidate.googleEventId);
+    }
+
+    const updated = await prisma.candidate.update({
+      where: { id: candidateId },
+      data: {
+        scheduledAt: null,
+        interviewAttendees: [],
+        googleEventId: null,
+        googleMeetLink: null,
+      },
+    });
+
+    return NextResponse.json({ ok: true, candidate: updated });
+  } catch (err) {
+    console.error("Error cancelling interview:", err);
+    return NextResponse.json(
+      { ok: false, error: String(err) },
+      { status: 500 }
+    );
+  }
+}
