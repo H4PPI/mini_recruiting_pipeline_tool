@@ -352,7 +352,7 @@ export default function JobsPage() {
                       </div>
                     </div>
 
-                    <div>
+                    {/* <div>
                       <div className="flex items-center justify-between gap-3 mb-2">
                         <h3 className="text-sm font-semibold text-black/70">
                           Job Description
@@ -387,7 +387,7 @@ export default function JobsPage() {
                           </p>
                         )}
                       </div>
-                    </div>
+                    </div> */}
                   </div>
                 )}
 
